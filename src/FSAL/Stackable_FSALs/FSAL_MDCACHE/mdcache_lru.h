@@ -200,7 +200,8 @@ static inline bool mdcache_lru_caching_fds(void)
 }
 
 void lru_remove_chunk(struct dir_chunk *chunk);
-struct dir_chunk *mdcache_get_chunk(mdcache_entry_t *parent);
+struct dir_chunk *mdcache_get_chunk(mdcache_entry_t *parent,
+				    struct dir_chunk *prev_chunk);
 void lru_bump_chunk(struct dir_chunk *chunk);
 
 #endif				/* MDCACHE_LRU_H */
