@@ -46,12 +46,13 @@
 
 static void release(struct fsal_obj_handle *obj_hdl)
 {
-
+	LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW handle.c/release");
 	struct rgw_handle *obj =
 		container_of(obj_hdl, struct rgw_handle, handle);
 	struct rgw_export *export = obj->export;
 
 	if (obj->rgw_fh != export->rgw_fs->root_fh) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW call rgw_fh_rele");
 		/* release RGW ref */
 		(void) rgw_fh_rele(export->rgw_fs, obj->rgw_fh,
 				0 /* flags */);
@@ -96,15 +97,23 @@ static fsal_status_t lookup_int(struct fsal_obj_handle *dir_hdl,
 	 * take struct stat pointer OUT as libcephfs' does */
 	rc = rgw_lookup(export->rgw_fs, dir->rgw_fh, path, &rgw_fh,
 			flags);
-	if (rc < 0)
+	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: lookup_int: rgw_lookup error %d",
+				rc);
 		return rgw2fsal_error(rc);
+	}
 
 	rc = rgw_getattr(export->rgw_fs, rgw_fh, &st, RGW_GETATTR_FLAG_NONE);
-	if (rc < 0)
+	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: lookup_int: rgw_getattr error %d",
+				rc);
 		return rgw2fsal_error(rc);
+	}
 
 	rc = construct_handle(export, rgw_fh, &st, &obj);
 	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: lookup_int: construct_handle error %d",
+				rc);
 		return rgw2fsal_error(rc);
 	}
 
@@ -148,8 +157,11 @@ static bool rgw_cb(const char *name, void *arg, uint64_t offset, uint32_t flags)
 			RGW_LOOKUP_FLAG_RCB|
 			(flags & (RGW_LOOKUP_FLAG_DIR|RGW_LOOKUP_FLAG_FILE)));
 	if (FSAL_IS_ERROR(status))
+	{
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: rgw_cb: lookup_int error %s",
+				fsal_err_txt(status));
 		return false;
-
+	}
 	/** @todo FSF - when rgw gains mark capability, need to change this
 	 *              code...
 	 */
@@ -203,9 +215,11 @@ static fsal_status_t rgw_fsal_readdir(struct fsal_obj_handle *dir_hdl,
 	*eof = false;
 	rc = rgw_readdir2(export->rgw_fs, dir->rgw_fh, r_whence, rgw_cb,
 			  &rgw_cb_arg, eof, RGW_READDIR_FLAG_NONE);
-	if (rc < 0)
+	if (rc < 0){
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: rgw_fsal_readdir: rgw_readdir2 error %d",
+							 rc);
 		return rgw2fsal_error(rc);
-
+	}
 	return fsal_status;
 }
 
@@ -338,11 +352,16 @@ static fsal_status_t rgw_fsal_create(struct fsal_obj_handle *dir_hdl,
 
 	rc = rgw_create(export->rgw_fs, dir->rgw_fh, name, &st, create_mask,
 			&rgw_fh, 0 /* posix flags */, RGW_CREATE_FLAG_NONE);
-	if (rc < 0)
+	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: rgw_fsal_create: rgw_create error %d",
+							 rc);
 		return rgw2fsal_error(rc);
+	}
 
 	rc = construct_handle(export, rgw_fh, &st, &obj);
 	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: rgw_fsal_create: construct_handle error %d",
+							 rc);
 		return rgw2fsal_error(rc);
 	}
 
@@ -406,11 +425,16 @@ static fsal_status_t rgw_fsal_mkdir(struct fsal_obj_handle *dir_hdl,
 
 	rc = rgw_mkdir(export->rgw_fs, dir->rgw_fh, name, &st, create_mask,
 		&rgw_fh, RGW_MKDIR_FLAG_NONE);
-	if (rc < 0)
+	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: rgw_mkdir error %d",
+							 rc);
 		return rgw2fsal_error(rc);
+	}
 
 	rc = construct_handle(export, rgw_fh, &st, &obj);
 	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: rgw construct_handle error %d",
+							 rc);
 		return rgw2fsal_error(rc);
 	}
 
@@ -453,6 +477,8 @@ static fsal_status_t getattrs(struct fsal_obj_handle *obj_hdl,
 			RGW_GETATTR_FLAG_NONE);
 
 	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: getattrs error %d",
+							 rc);
 		if (attrs->request_mask & ATTR_RDATTR_ERR) {
 			/* Caller asked for error to be visible. */
 			attrs->valid_mask = ATTR_RDATTR_ERR;
@@ -676,8 +702,11 @@ static fsal_status_t rgw_fsal_rename(struct fsal_obj_handle *obj_hdl,
 	rc = rgw_rename(export->rgw_fs, olddir->rgw_fh, old_name,
 			newdir->rgw_fh, new_name, RGW_RENAME_FLAG_NONE);
 	if (rc < 0)
+	{
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: rgw_fsal_rename error %d",
+							 rc);
 		return rgw2fsal_error(rc);
-
+	}
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
@@ -714,8 +743,11 @@ static fsal_status_t rgw_fsal_unlink(struct fsal_obj_handle *dir_hdl,
 	rc = rgw_unlink(export->rgw_fs, dir->rgw_fh, name,
 			RGW_UNLINK_FLAG_NONE);
 	if (rc < 0)
+	{
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: rgw_fsal_unlink error %d",
+							 rc);
 		return rgw2fsal_error(rc);
-
+	}
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
@@ -879,6 +911,8 @@ fsal_status_t rgw_fsal_open2(struct fsal_obj_handle *obj_hdl,
 						      openflags, false);
 
 			if (FSAL_IS_ERROR(status)) {
+				LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW check_share_conflict error %s",
+						 fsal_err_txt(status));
 				PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 				return status;
 			}
@@ -907,6 +941,8 @@ fsal_status_t rgw_fsal_open2(struct fsal_obj_handle *obj_hdl,
 			(!state) ? RGW_OPEN_FLAG_V3 : RGW_OPEN_FLAG_NONE);
 
 		if (rc < 0) {
+			LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW rgw_open error %d",
+					 rc);
 			if (!state) {
 				/* Release the lock taken above, and return
 				 * since there is nothing to undo.
@@ -924,6 +960,8 @@ fsal_status_t rgw_fsal_open2(struct fsal_obj_handle *obj_hdl,
 			rc = rgw_getattr(export->rgw_fs, handle->rgw_fh, &st,
 					RGW_GETATTR_FLAG_NONE);
 			if (rc < 0) {
+				LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW rgw_getattr error %d",
+						 rc);
 				status = rgw2fsal_error(rc);
 			} else {
 				LogFullDebug(COMPONENT_FSAL,
@@ -949,6 +987,8 @@ fsal_status_t rgw_fsal_open2(struct fsal_obj_handle *obj_hdl,
 			 * status. If success, we haven't done any permission
 			 * check so ask the caller to do so.
 			 */
+			LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW no state error %s",
+					 fsal_err_txt(status));
 			PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 			*caller_perm_check = !FSAL_IS_ERROR(status);
 			return status;
@@ -1083,6 +1123,7 @@ fsal_status_t rgw_fsal_open2(struct fsal_obj_handle *obj_hdl,
 	}
 
 	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW rgw_fsal_open2 error %d", rc);
 		return rgw2fsal_error(rc);
 	}
 
@@ -1122,6 +1163,7 @@ fsal_status_t rgw_fsal_open2(struct fsal_obj_handle *obj_hdl,
 		(!state) ? RGW_OPEN_FLAG_V3 : RGW_OPEN_FLAG_NONE);
 
 	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004:rgw_open %d", rc);
 		goto fileerr;
 	}
 
@@ -1146,6 +1188,8 @@ fsal_status_t rgw_fsal_open2(struct fsal_obj_handle *obj_hdl,
 							      attrs_out);
 			if (FSAL_IS_ERROR(status) &&
 			    (attrs_out->request_mask & ATTR_RDATTR_ERR) == 0) {
+				LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW setattr2 error %s",
+									 fsal_err_txt(status));
 				/* Get attributes failed and caller expected
 				 * to get the attributes. Otherwise continue
 				 * with attrs_out indicating ATTR_RDATTR_ERR.
@@ -1180,6 +1224,8 @@ fsal_status_t rgw_fsal_open2(struct fsal_obj_handle *obj_hdl,
 
  fileerr:
 
+	LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW setattr2 error %s",
+				fsal_err_txt(status));
 	/* Close the file we just opened. */
 	(void) rgw_close(export->rgw_fs, obj->rgw_fh,
 			RGW_CLOSE_FLAG_NONE);
@@ -1275,6 +1321,8 @@ fsal_status_t rgw_fsal_reopen2(struct fsal_obj_handle *obj_hdl,
 	status = check_share_conflict(&handle->share, openflags, false);
 
 	if (FSAL_IS_ERROR(status)) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW check_share_conflict error %s",
+				fsal_err_txt(status));
 		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 		return status;
@@ -1302,6 +1350,8 @@ fsal_status_t rgw_fsal_reopen2(struct fsal_obj_handle *obj_hdl,
 			/* We had a failure on open - we need to revert the
 			 * share. This can block over an I/O operation.
 			 */
+			LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW rgw_open error %d",
+					rc);
 			PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 
 			update_share_counters(&handle->share, openflags,
@@ -1357,6 +1407,7 @@ fsal_status_t rgw_fsal_read2(struct fsal_obj_handle *obj_hdl,
 		"%s enter obj_hdl %p state %p", __func__, obj_hdl, state);
 
 	if (info != NULL) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW READ PLUS not supported");
 		/* Currently we don't support READ_PLUS */
 		return fsalstat(ERR_FSAL_NOTSUPP, 0);
 	}
@@ -1369,7 +1420,11 @@ fsal_status_t rgw_fsal_read2(struct fsal_obj_handle *obj_hdl,
 			RGW_READ_FLAG_NONE);
 
 	if (rc < 0)
+	{
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW rgw_read error %d",
+				rc);
 		return rgw2fsal_error(rc);
+	}
 
 	*end_of_file = (read_amount == 0);
 
@@ -1420,6 +1475,7 @@ fsal_status_t rgw_fsal_write2(struct fsal_obj_handle *obj_hdl,
 		"%s enter obj_hdl %p state %p", __func__, obj_hdl, state);
 
 	if (info != NULL) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW fsal_write2 WRITE_PLUS not supported");
 		/* Currently we don't support WRITE_PLUS */
 		return fsalstat(ERR_FSAL_NOTSUPP, 0);
 	}
@@ -1435,13 +1491,21 @@ fsal_status_t rgw_fsal_write2(struct fsal_obj_handle *obj_hdl,
 		state, rc);
 
 	if (rc < 0)
+	{
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW rgw_write error %d",
+				rc);
 		return rgw2fsal_error(rc);
+	}
 
 	if (*fsal_stable) {
 		rc = rgw_fsync(export->rgw_fs, handle->rgw_fh,
 			       RGW_WRITE_FLAG_NONE);
 		if (rc < 0)
+		{
+			LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW rgw_fsync error %d",
+					rc);
 			return rgw2fsal_error(rc);
+		}
 	}
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
@@ -1482,8 +1546,11 @@ fsal_status_t rgw_fsal_commit2(struct fsal_obj_handle *obj_hdl,
 	rc = rgw_commit(export->rgw_fs, handle->rgw_fh, offset, length,
 			RGW_FSYNC_FLAG_NONE);
 	if (rc < 0)
+	{
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW rgw_commit error %d",
+				 rc);
 		return rgw2fsal_error(rc);
-
+	}
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
@@ -1558,13 +1625,17 @@ fsal_status_t rgw_fsal_close2(struct fsal_obj_handle *obj_hdl,
 			PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 		}
 	} else if (handle->openflags == FSAL_O_CLOSED) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: rgw_close ERR_FSAL_NOT_OPENED");
 		return fsalstat(ERR_FSAL_NOT_OPENED, 0);
 	}
 
 	rc = rgw_close(export->rgw_fs, handle->rgw_fh, RGW_CLOSE_FLAG_NONE);
 	if (rc < 0)
+	{
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: rgw_close return error %d export_id %d",
+				 rc, export->export.export_id);
 		return rgw2fsal_error(rc);
-
+	}
 	handle->openflags = FSAL_O_CLOSED;
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
@@ -1625,6 +1696,7 @@ static fsal_status_t handle_to_wire(const struct fsal_obj_handle *obj_hdl,
 		break;
 
 	default:
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW handle.c handle to wire ERR_FSAL_SERVERFAULT");
 		return fsalstat(ERR_FSAL_SERVERFAULT, 0);
 	}
 

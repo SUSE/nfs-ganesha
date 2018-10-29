@@ -250,6 +250,9 @@ mdcache_fsal_create_export(struct fsal_module *sub_fsal, void *parse_node,
 	snprintf(myself->name, namelen, "%s/MDC", sub_fsal->name);
 
 	fsal_export_init(&myself->export);
+	LogDebug(COMPONENT_FSAL,
+		"bsc#1105004: mdcache_fsal_create_export: call export_ops_init for subfsal %s",
+		sub_fsal->name);
 	mdcache_export_ops_init(&myself->export.exp_ops);
 
 	myself->super_up_ops = *super_up_ops; /* Struct copy */

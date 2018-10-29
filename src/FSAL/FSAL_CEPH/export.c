@@ -229,14 +229,19 @@ static fsal_status_t create_handle(struct fsal_export *export_pub,
 
 	*pub_handle = NULL;
 
+	LogDebug(COMPONENT_FSAL, "bsc#1105004:Ceph_FSAL create_handle");
 	if (desc->len != sizeof(vinodeno_t)) {
+		LogDebug(COMPONENT_FSAL, "bsc#1105004: Ceph_FSAL: line 234/export.c ERR_FSAL_INVAL");
 		status.major = ERR_FSAL_INVAL;
 		return status;
 	}
 
 	i = ceph_ll_get_inode(export->cmount, *vi);
 	if (!i)
+	{
+		LogDebug(COMPONENT_FSAL, "bsc#1105004:Ceph_FSAL: inode not found");
 		return ceph2fsal_error(-ESTALE);
+	}
 
 	/* The ceph_ll_connectable_m should have populated libceph's
 	   cache with all this anyway */
@@ -244,8 +249,10 @@ static fsal_status_t create_handle(struct fsal_export *export_pub,
 		attrs_out ? CEPH_STATX_ATTR_MASK : CEPH_STATX_HANDLE_MASK,
 		op_ctx->creds);
 	if (rc < 0)
+	{
+		LogDebug(COMPONENT_FSAL, "bsc#1105004:Ceph_FSAL ceph_ll_getattr rc =%d", rc);
 		return ceph2fsal_error(rc);
-
+	}
 	construct_handle(&stx, i, export, &handle);
 
 	if (attrs_out != NULL)

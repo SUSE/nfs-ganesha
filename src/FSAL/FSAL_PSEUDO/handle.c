@@ -758,6 +758,8 @@ fsal_status_t pseudofs_create_handle(struct fsal_export *exp_hdl,
 
 	*handle = NULL;
 
+	LogDebug(COMPONENT_FSAL,
+		"bsc#1105004: pseudofs_create_handle");
 	if (hdl_desc->len != V4_FH_OPAQUE_SIZE) {
 		LogCrit(COMPONENT_FSAL,
 			"Invalid handle size %zu expected %lu",

@@ -291,8 +291,11 @@ cih_get_by_key_latch(mdcache_key_t *key, cih_latch_t *latch,
 	void **cache_slot;
 
 	if (!cih_latch_entry(key, latch, flags, func, line))
+	{
+		LogDebug(COMPONENT_HASHTABLE_CACHE,
+				 "bsc#1105004: cih_get_by_key_latch() entry not found");
 		return NULL;
-
+	}
 	k_entry.fh_hk.key = *key;
 
 	/* check cache */

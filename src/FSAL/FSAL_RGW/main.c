@@ -359,11 +359,18 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 	rc = rgw_getattr(export->rgw_fs, export->rgw_fs->root_fh, &st,
 			RGW_GETATTR_FLAG_NONE);
 	if (rc < 0)
+	{
+		LogDebug(COMPONENT_CACHE_INODE,
+				 "bsc#1105004: rgw_getattr returned error %d",
+				 rc);
 		return rgw2fsal_error(rc);
-
+	}
 	rc = construct_handle(export, export->rgw_fs->root_fh, &st, &handle);
 	if (rc < 0) {
 		status = rgw2fsal_error(rc);
+		LogDebug(COMPONENT_CACHE_INODE,
+				 "bsc#1105004: rgw_getattr returned status %s",
+				 fsal_err_txt(status));
 		goto error;
 	}
 

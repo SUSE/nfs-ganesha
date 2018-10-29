@@ -1895,10 +1895,22 @@ fsal_status_t mdcache_create_handle(struct fsal_export *exp_hdl,
 	fsal_status_t status;
 
 	*handle = NULL;
+	LogDebug(COMPONENT_CACHE_INODE,
+			 "bsc#1105004: mdcache_create_handle() export_id %" PRIu16,
+			 exp_hdl->export_id);
+
+	LogDebug(COMPONENT_CACHE_INODE,
+			 "bsc#1105004: mdcache_create_handle() fsal %s",
+			 exp_hdl->fsal->name);
+
 	status = mdcache_locate_host(fh_desc, export, &entry, attrs_out);
 	if (FSAL_IS_ERROR(status))
+	{
+		LogDebug(COMPONENT_CACHE_INODE,
+				 "bsc#1105004: mdcache_locate_host return status %s",
+				 fsal_err_txt(status));
 		return status;
-
+	}
 	/* Make sure this entry has a parent pointer */
 	PTHREAD_RWLOCK_wrlock(&entry->content_lock);
 	mdc_get_parent(export, entry);

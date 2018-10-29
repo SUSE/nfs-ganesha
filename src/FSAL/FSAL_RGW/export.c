@@ -55,6 +55,8 @@ static void release(struct fsal_export *export_pub)
 	struct rgw_export *export =
 	    container_of(export_pub, struct rgw_export, export);
 
+	LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW release for export %d",
+			 export_pub->export_id);
 	int rc = rgw_umount(export->rgw_fs, RGW_UMOUNT_FLAG_NONE);
 	assert(rc == 0);
 	deconstruct_handle(export->root);
@@ -108,6 +110,8 @@ static fsal_status_t lookup_path(struct fsal_export *export_pub,
 	/* should only be "/" or "bucket_name" */
 	if (strcmp(path, "/") && strchr(path, '/')) {
 		status.major = ERR_FSAL_INVAL;
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: lookup failed %s for export %d",
+				 path, export_pub->export_id);
 		return status;
 	}
 
@@ -120,7 +124,11 @@ static fsal_status_t lookup_path(struct fsal_export *export_pub,
 	rc = rgw_lookup(export->rgw_fs, export->rgw_fs->root_fh, path,
 			&rgw_fh, RGW_LOOKUP_FLAG_NONE);
 	if (rc < 0)
+	{
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: rgw_lookup failed %s with error %d for export %d",
+				 path, rc, export_pub->export_id);
 		return rgw2fsal_error(rc);
+	}
 #else
 	rgw_fh = export->rgw_fs->root_fh;
 #endif
@@ -129,6 +137,8 @@ static fsal_status_t lookup_path(struct fsal_export *export_pub,
 	rc = rgw_getattr(export->rgw_fs, export->rgw_fs->root_fh,
 			 &st, RGW_GETATTR_FLAG_NONE);
 	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: rgw_getattr failed %s with error %d for export %d",
+				 path, rc, export_pub->export_id);
 		return rgw2fsal_error(rc);
 	}
 
@@ -139,12 +149,16 @@ static fsal_status_t lookup_path(struct fsal_export *export_pub,
 	rc = rgw_getattr(export->rgw_fs, export->rgw_fs->root_fh,
 			 &st_root, RGW_GETATTR_FLAG_NONE);
 	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: rgw_getattr failed %s with error %d for export %d",
+				 path, rc, export_pub->export_id);
 		return rgw2fsal_error(rc);
 	}
 	st.st_dev = st_root.st_dev;
 #endif
 	rc = construct_handle(export, rgw_fh, &st, &handle);
 	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: construct_handle failed %s with error %d for export %d",
+				 path, rc, export_pub->export_id);
 		return rgw2fsal_error(rc);
 	}
 
@@ -154,6 +168,7 @@ static fsal_status_t lookup_path(struct fsal_export *export_pub,
 		posix2fsal_attributes_all(&st, attrs_out);
 	}
 
+	LogDebug(COMPONENT_FSAL,"bsc#1105004: FSAL RGW final status from lookup %d", rc);
 	return status;
 }
 
@@ -179,8 +194,10 @@ static fsal_status_t wire_to_host(struct fsal_export *exp_hdl,
 		fh_desc->len = sizeof(struct rgw_fh_hk);
 		break;
 	default:
+		LogDebug(COMPONENT_FSAL,"bsc#1105004: wire_to_host ERR_FSAL_SERVERFAULT");
 		return fsalstat(ERR_FSAL_SERVERFAULT, 0);
 	}
+
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
@@ -226,19 +243,32 @@ static fsal_status_t create_handle(struct fsal_export *export_pub,
 		return status;
 	}
 
+	LogDebug(COMPONENT_FSAL,"bsc#1105004: RGW create_handle for export %d",
+			 export->export.export_id);
 	memcpy((char *) &fh_hk, desc->addr, desc->len);
 
 	rc = rgw_lookup_handle(export->rgw_fs, &fh_hk, &rgw_fh,
 			RGW_LOOKUP_FLAG_NONE);
-	if (rc < 0)
+	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,
+				 "bsc#1105004: rgw_lookup_handle returned = %d",
+				 rc);
 		return rgw2fsal_error(-ESTALE);
+	}
 
 	rc = rgw_getattr(export->rgw_fs, rgw_fh, &st, RGW_GETATTR_FLAG_NONE);
-	if (rc < 0)
+	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,
+				 "bsc#1105004: rgw_getattr returned = %d",
+				 rc);
 		return rgw2fsal_error(rc);
+	}
 
 	rc = construct_handle(export, rgw_fh, &st, &handle);
 	if (rc < 0) {
+		LogDebug(COMPONENT_FSAL,
+				 "bsc#1105004: construct_handle returned = %d",
+				 rc);
 		return rgw2fsal_error(rc);
 	}
 

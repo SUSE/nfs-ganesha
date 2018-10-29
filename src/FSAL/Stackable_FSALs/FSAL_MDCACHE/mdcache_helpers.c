@@ -948,7 +948,9 @@ mdcache_find_keyed(mdcache_key_t *key, mdcache_entry_t **entry)
 
 		return fsalstat(ERR_FSAL_NO_ERROR, 0);
 	}
-
+	else
+		LogDebug(COMPONENT_CACHE_INODE,
+				 "bsc#1105004: mdcache_find_keyed entry not found in cih_get_by_key_latch()");
 	return fsalstat(ERR_FSAL_NOENT, 0);
 }
 
@@ -990,19 +992,29 @@ mdcache_locate_host(struct gsh_buffdesc *fh_desc,
 	       );
 
 	if (FSAL_IS_ERROR(status))
+	{
+		LogDebug(COMPONENT_CACHE_INODE,
+				 "bsc#1105004: host_to_key status: %s",
+				 fsal_err_txt(status));
 		return status;
-
+	}
 	(void)cih_hash_key(&key, sub_export->fsal, &key.kv,
 			    CIH_HASH_KEY_PROTOTYPE);
 
 
 	status = mdcache_find_keyed(&key, entry);
-
+	LogDebug(COMPONENT_CACHE_INODE,
+			 "bsc#1105004: mdcache_locate_host FSAL %s",
+			 (*entry)->sub_handle->fsal->name);
 	if (!FSAL_IS_ERROR(status)) {
 		status = get_optional_attrs(&(*entry)->obj_handle, attrs_out);
 		return status;
 	} else if (status.major != ERR_FSAL_NOENT) {
 		/* Actual error */
+		LogDebug(COMPONENT_CACHE_INODE,
+			"bsc#1105004: mdcache_locate_host FSAL %s mdcache_find_keyed returned error %s",
+			(*entry)->sub_handle->fsal->name,
+			fsal_err_txt(status));
 		return status;
 	}
 
@@ -1016,6 +1028,7 @@ mdcache_locate_host(struct gsh_buffdesc *fh_desc,
 
 	sub_export = export->export.sub_export;
 
+	LogDebug(COMPONENT_CACHE_INODE, "bsc#1105004: call create_handle");
 	subcall_raw(export,
 		    status = sub_export->exp_ops.create_handle(sub_export,
 							       fh_desc,
@@ -1027,6 +1040,10 @@ mdcache_locate_host(struct gsh_buffdesc *fh_desc,
 		LogDebug(COMPONENT_CACHE_INODE,
 			 "create_handle failed with %s",
 			 fsal_err_txt(status));
+		if (*entry != NULL)
+			LogDebug(COMPONENT_CACHE_INODE,
+				"bsc#1105004: create_handle failed FSAL %s",
+				(*entry)->sub_handle->fsal->name);
 		*entry = NULL;
 		fsal_release_attrs(&attrs);
 		return status;
