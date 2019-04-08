@@ -45,7 +45,7 @@ set(GANESHA_PATCH_LEVEL )
 # Extra version is for naming development/RC.  It is blank in master/stable branches
 # so it can be available to end-users to name local variants/versions
 # If used, it is always of the form "-whateveryouwant"
-set(GANESHA_EXTRA_VERSION -dev.18)
+set(GANESHA_EXTRA_VERSION -dev.24)
 
 set(GANESHA_VERSION ${GANESHA_MAJOR_VERSION}.${GANESHA_MINOR_VERSION}${GANESHA_PATCH_LEVEL}${GANESHA_EXTRA_VERSION})
 set(GANESHA_BASE_VERSION ${GANESHA_MAJOR_VERSION}.${GANESHA_MINOR_VERSION}${GANESHA_PATCH_LEVEL})
@@ -542,6 +542,9 @@ endif (USE_ADMIN_TOOLS)
 gopt_test(USE_MAN_PAGE)
 if (USE_MAN_PAGE)
   find_program(SPHINX_BUILD sphinx-build)
+  if(NOT SPHINX_BUILD)
+    find_program(SPHINX_BUILD sphinx-build-3)
+  endif(NOT SPHINX_BUILD)
   if(NOT SPHINX_BUILD)
     if (USE_MAN_PAGE_REQUIRED)
       message(FATAL_ERROR "Can't find sphinx-build but man pages requested on command line")
@@ -1085,7 +1088,6 @@ check_symbol_exists(urcu_ref_get_unless_zero urcu/ref.h HAVE_URCU_REF_GET_UNLESS
 set(SYSTEM_LIBRARIES
   ${NTIRPC_LIBRARY}
   ${SYSTEM_LIBRARIES}
-  gos
   ${LIBDL}
   ${KRB5_LIBRARIES}
   ${CMAKE_THREAD_LIBS_INIT}
@@ -1368,11 +1370,17 @@ else(USE_FSAL_MEM)
     set(BCOND_MEM "%bcond_with")
 endif(USE_FSAL_MEM)
 
-if(USE_9P_RDMA)
-    set(BCOND_RDMA "%bcond_without")
-else(USE_9P_RDMA)
+if(USE_9P)
+    set(BCOND_9P "%bcond_without")
+    if(USE_9P_RDMA)
+        set(BCOND_RDMA "%bcond_without")
+    else(USE_9P_RDMA)
+        set(BCOND_RDMA "%bcond_with")
+    endif(USE_9P_RDMA)
+else(USE_9P)
+    set(BCOND_9P "%bcond_with")
     set(BCOND_RDMA "%bcond_with")
-endif(USE_9P_RDMA)
+endif(USE_9P)
 
 if(USE_LTTNG)
     set(BCOND_LTTNG "%bcond_without")
@@ -1504,6 +1512,72 @@ if(COVERAGE)
 			)
 	endif(LCOV_EXEC AND GENHTML_EXEC)
 endif(COVERAGE)
+
+########### next target ###############
+
+add_executable(ganesha.nfsd ./MainNFSD/nfs_main.c)
+add_sanitizers(ganesha.nfsd)
+
+target_link_libraries(ganesha.nfsd
+  ganesha_nfsd
+  ${LIBTIRPC_LIBRARIES}
+  ${SYSTEM_LIBRARIES}
+  ${LTTNG_LIBRARIES}
+)
+
+install(TARGETS ganesha.nfsd COMPONENT daemon DESTINATION bin)
+
+########### next target ###############
+
+if (USE_RADOS_RECOV)
+  add_executable(ganesha-rados-grace ./tools/ganesha-rados-grace.c)
+  include_directories(${RADOS_INCLUDE_DIR})
+  target_link_libraries(ganesha-rados-grace ganesha_nfsd ${RADOS_LIBRARIES})
+  install(TARGETS ganesha-rados-grace COMPONENT tools DESTINATION bin)
+endif(USE_RADOS_RECOV)
+
+########### next target ###############
+
+if(LINUX)
+
+  add_executable(sm_notify.ganesha ./Protocols/NLM/sm_notify.c)
+  add_sanitizers(sm_notify.ganesha)
+
+  target_link_libraries(sm_notify.ganesha
+    ganesha_nfsd
+    ${LIBTIRPC_LIBRARIES}
+    ${SYSTEM_LIBRARIES}
+    ${LTTNG_LIBRARIES}
+  )
+
+  if( USE_ADMIN_TOOLS )
+    install(TARGETS sm_notify.ganesha COMPONENT daemon DESTINATION bin)
+  endif( USE_ADMIN_TOOLS )
+endif(LINUX)
+
+########### next target ###############
+
+add_executable(verif_syntax EXCLUDE_FROM_ALL ./config_parsing/verif_syntax.c)
+add_sanitizers(verif_syntax)
+
+target_link_libraries(verif_syntax
+  ganesha_nfsd
+  ${LIBTIRPC_LIBRARIES}
+  ${SYSTEM_LIBRARIES}
+  ${LTTNG_LIBRARIES}
+)
+
+########### next target ###############
+
+add_executable(test_parsing EXCLUDE_FROM_ALL ./config_parsing/test_parse.c)
+add_sanitizers(test_parsing)
+
+target_link_libraries(test_parsing
+  ganesha_nfsd
+  ${LIBTIRPC_LIBRARIES}
+  ${SYSTEM_LIBRARIES}
+  ${LTTNG_LIBRARIES}
+)
 
 ########### add a "make doc" target to call Doxygen
 find_package(Doxygen)

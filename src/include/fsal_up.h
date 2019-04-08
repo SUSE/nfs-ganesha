@@ -75,10 +75,6 @@ enum {
 	 * than that currently set. */
 	fsal_up_update_mtime_inc = 0x0010,
 
-	/* Update the chgtime only if the new time is later
-	 * than that currently set. */
-	fsal_up_update_chgtime_inc = 0x0020,
-
 	/* Update the spaceused only if the new size is greater
 	 * than that currently set. */
 	fsal_up_update_spaceused_inc = 0x0040,
@@ -114,6 +110,7 @@ static const uint32_t FSAL_UP_INVALIDATE_DIR_CHUNKS = 0x10;
 static const uint32_t FSAL_UP_INVALIDATE_CLOSE = 0x100;
 static const uint32_t FSAL_UP_INVALIDATE_FS_LOCATIONS = 0x200;
 static const uint32_t FSAL_UP_INVALIDATE_SEC_LABEL = 0x400;
+static const uint32_t FSAL_UP_INVALIDATE_PARENT = 0x800;
 #define FSAL_UP_INVALIDATE_CACHE ( \
 	FSAL_UP_INVALIDATE_ATTRS | \
 	FSAL_UP_INVALIDATE_ACL | \
@@ -121,7 +118,8 @@ static const uint32_t FSAL_UP_INVALIDATE_SEC_LABEL = 0x400;
 	FSAL_UP_INVALIDATE_DIR_POPULATED | \
 	FSAL_UP_INVALIDATE_DIR_CHUNKS | \
 	FSAL_UP_INVALIDATE_FS_LOCATIONS | \
-	FSAL_UP_INVALIDATE_SEC_LABEL)
+	FSAL_UP_INVALIDATE_SEC_LABEL | \
+	FSAL_UP_INVALIDATE_PARENT)
 
 /**
  * @brief Possible upcall functions

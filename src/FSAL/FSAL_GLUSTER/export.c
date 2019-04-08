@@ -69,6 +69,8 @@ static void export_release(struct fsal_export *exp_hdl)
 	glfs_export->gl_fs = NULL;
 	gsh_free(glfs_export->export_path);
 	glfs_export->export_path = NULL;
+	gsh_free(glfs_export->sec_label_xattr);
+	glfs_export->sec_label_xattr = NULL;
 	gsh_free(glfs_export);
 	glfs_export = NULL;
 }
@@ -498,6 +500,7 @@ struct glexport_params {
 	uint64_t up_poll_usec;
 	bool enable_upcall;
 	enum transport gltransport;
+	char *sec_label_xattr;
 };
 
 static struct config_item_list transportformats[] = {
@@ -522,6 +525,8 @@ static struct config_item export_params[] = {
 		       enable_upcall),
 	CONF_ITEM_TOKEN("transport", GLUSTER_TCP_VOL, transportformats,
 			glexport_params, gltransport),
+	CONF_ITEM_STR("sec_label_xattr", 0, 256, "security.selinux",
+			glexport_params, sec_label_xattr),
 	CONFIG_EOL
 };
 
@@ -790,6 +795,7 @@ fsal_status_t glusterfs_create_export(struct fsal_module *fsal_hdl,
 	glfsexport->saveduid = geteuid();
 	glfsexport->savedgid = getegid();
 	glfsexport->export.fsal = fsal_hdl;
+	glfsexport->sec_label_xattr = params.sec_label_xattr;
 
 	op_ctx->fsal_export = &glfsexport->export;
 

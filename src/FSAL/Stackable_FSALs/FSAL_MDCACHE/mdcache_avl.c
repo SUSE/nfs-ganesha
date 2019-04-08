@@ -83,7 +83,7 @@ avl_dirent_set_deleted(mdcache_entry_t *entry, mdcache_dir_entry_t *v)
 			v, v->name);
 
 #ifdef DEBUG_MDCACHE
-	assert(entry->content_lock.__data.__writer);
+	assert(entry->content_lock.__data.__cur_writer);
 #endif
 	assert(!(v->flags & DIR_ENTRY_FLAG_DELETED));
 
@@ -125,12 +125,16 @@ avl_dirent_set_deleted(mdcache_entry_t *entry, mdcache_dir_entry_t *v)
 				 *        the chunk...
 				 */
 
+
 				/* Look for the next chunk */
 				if (chunk->next_ck != 0 &&
 				    mdcache_avl_lookup_ck(parent,
 							  chunk->next_ck,
 							  &next)) {
 					chunk = next->chunk;
+					/* We don't need the ref, we have the
+					 * content lock */
+					mdcache_lru_unref_chunk(chunk, true);
 				}
 			}
 
@@ -167,7 +171,7 @@ void unchunk_dirent(mdcache_dir_entry_t *dirent)
 			dirent, dirent->name);
 
 #ifdef DEBUG_MDCACHE
-	assert(parent->content_lock.__data.__writer);
+	assert(parent->content_lock.__data.__cur_writer);
 #endif
 
 	/* Dirent is part of a chunk, must do additional clean
@@ -200,6 +204,8 @@ void unchunk_dirent(mdcache_dir_entry_t *dirent)
 /**
  * @brief Remove and free a dirent.
  *
+ * @note parent content_lock MUST be held for write
+ *
  * @param[in] parent    The directory removing from
  * @param[in] dirent    The dirent to remove
  *
@@ -208,23 +214,16 @@ void mdcache_avl_remove(mdcache_entry_t *parent,
 			mdcache_dir_entry_t *dirent)
 {
 	struct dir_chunk *chunk = dirent->chunk;
-	fsal_status_t status;
-	mdcache_entry_t *entry = NULL;
 
 	if ((dirent->flags & DIR_ENTRY_FLAG_DELETED) == 0) {
 		/* Remove from active names tree */
 		avltree_remove(&dirent->node_name, &parent->fsobj.fsdir.avl.t);
 	}
 
-	if (dirent->flags & DIR_ENTRY_REFFED) {
-		/* We have a ref, so the entry must exist */
-		status = mdcache_find_keyed_reason(&dirent->ckey, &entry,
-						   MDC_REASON_SCAN);
-		assert(FSAL_IS_SUCCESS(status));
-
-		mdcache_put(entry);  /* Ref for dirent */
-		mdcache_put(entry);  /* Ref gotten above */
-		dirent->flags &= ~DIR_ENTRY_REFFED;
+	if (dirent->entry) {
+		/* We have a ref'd entry, drop our ref */
+		mdcache_put(dirent->entry);
+		dirent->entry = NULL;
 	}
 
 	if (dirent->chunk != NULL) {
@@ -265,7 +264,7 @@ int mdcache_avl_insert_ck(mdcache_entry_t *entry, mdcache_dir_entry_t *v)
 			v, v->name, entry, v->ck);
 
 #ifdef DEBUG_MDCACHE
-	assert(entry->content_lock.__data.__writer);
+	assert(entry->content_lock.__data.__cur_writer);
 #endif
 	node = avltree_inline_insert(&v->node_ck, &entry->fsobj.fsdir.avl.ck,
 				     avl_dirent_ck_cmpf);
@@ -322,7 +321,7 @@ mdcache_avl_insert(mdcache_entry_t *entry, mdcache_dir_entry_t **dirent)
 			"Insert dir entry %p %s",
 			v, v->name);
 #ifdef DEBUG_MDCACHE
-	assert(entry->content_lock.__data.__writer);
+	assert(entry->content_lock.__data.__cur_writer);
 #endif
 
 	/* compute hash */
@@ -506,6 +505,8 @@ out:
  *
  * Look up a dirent by FSAL cookie.
  *
+ * @note this takes a ref on the chunk containing @a dirent
+ *
  * @param[in] entry	Directory to search in
  * @param[in] ck	FSAL cookie to find
  * @param[out] dirent	Returned dirent, if found, NULL otherwise
@@ -542,6 +543,7 @@ bool mdcache_avl_lookup_ck(mdcache_entry_t *entry, uint64_t ck,
 			assert(chunk);
 			return false;
 		}
+		mdcache_lru_ref_chunk(chunk);
 		*dirent = ent;
 		return true;
 	}
@@ -600,7 +602,7 @@ void mdcache_avl_clean_trees(mdcache_entry_t *parent)
 	mdcache_dir_entry_t *dirent;
 
 #ifdef DEBUG_MDCACHE
-	assert(parent->content_lock.__data.__writer);
+	assert(parent->content_lock.__data.__cur_writer);
 #endif
 
 	while ((dirent_node = avltree_first(&parent->fsobj.fsdir.avl.t))) {

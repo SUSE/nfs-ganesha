@@ -34,6 +34,7 @@
 #include "nfs_exports.h"
 #include "sal_data.h"
 #include "sal_functions.h"
+#include "fsal_types.h"
 
 /* fsal_obj_handle common methods
  */
@@ -126,6 +127,8 @@ static fsal_status_t lookup(struct fsal_obj_handle *parent,
 	    container_of(op_ctx->fsal_export, struct glusterfs_export, export);
 	struct glusterfs_handle *parenthandle =
 	    container_of(parent, struct glusterfs_handle, handle);
+	glusterfs_fsal_xstat_t buffxstat = {.e_acl = NULL, .i_acl = NULL};
+
 #ifdef GLTIMING
 	struct timespec s_time, e_time;
 
@@ -157,6 +160,30 @@ static fsal_status_t lookup(struct fsal_obj_handle *parent,
 
 	if (attrs_out != NULL) {
 		posix2fsal_attributes_all(&sb, attrs_out);
+
+		if (attrs_out->request_mask & ATTR_ACL) {
+			/* Fetch the ACL */
+			status = glusterfs_get_acl(glfs_export,
+						   glhandle,
+						   &buffxstat, attrs_out);
+			if (status.major == ERR_FSAL_NOENT) {
+				if (attrs_out->type == SYMBOLIC_LINK)
+					status = fsalstat(ERR_FSAL_NO_ERROR, 0);
+				else
+					status = gluster2fsal_error(ESTALE);
+			}
+
+			if (!FSAL_IS_ERROR(status)) {
+				/* Success, so mark ACL as valid. */
+				attrs_out->valid_mask |= ATTR_ACL;
+			} else {
+				if (attrs_out->request_mask & ATTR_RDATTR_ERR)
+					attrs_out->valid_mask = ATTR_RDATTR_ERR;
+
+				fsal_release_attrs(attrs_out);
+				goto out;
+			}
+		}
 	}
 
 	*handle = &objhandle->handle;
@@ -169,7 +196,50 @@ static fsal_status_t lookup(struct fsal_obj_handle *parent,
 	latency_update(&s_time, &e_time, lat_lookup);
 #endif
 
+	glusterfs_fsal_clean_xstat(&buffxstat);
 	return status;
+}
+
+static int
+glusterfs_fsal_get_sec_label(struct glusterfs_handle *glhandle,
+			     struct attrlist *attrs)
+{
+	int rc = 0;
+	struct glusterfs_export *export =
+		container_of(op_ctx->fsal_export,
+			     struct glusterfs_export, export);
+
+	if (FSAL_TEST_MASK(attrs->request_mask, ATTR4_SEC_LABEL) &&
+	    op_ctx_export_has_option(EXPORT_OPTION_SECLABEL_SET)) {
+
+		char label[NFS4_OPAQUE_LIMIT];
+
+		rc = glfs_h_getxattrs(export->gl_fs->fs, glhandle->glhandle,
+				export->sec_label_xattr, label,
+				NFS4_OPAQUE_LIMIT);
+
+		if (rc < 0) {
+			/* If there's no label then just do zero-length one */
+			if (errno != ENODATA) {
+				rc = -errno;
+				goto out_err;
+			}
+			rc = 0;
+		}
+
+		attrs->sec_label.slai_data.slai_data_len = rc;
+		gsh_free(attrs->sec_label.slai_data.slai_data_val);
+		if (rc > 0) {
+			attrs->sec_label.slai_data.slai_data_val =
+				gsh_memdup(label, rc);
+			FSAL_SET_MASK(attrs->valid_mask, ATTR4_SEC_LABEL);
+		} else {
+			attrs->sec_label.slai_data.slai_data_val = NULL;
+			FSAL_UNSET_MASK(attrs->valid_mask, ATTR4_SEC_LABEL);
+		}
+	}
+out_err:
+	return rc;
 }
 
 /**
@@ -198,6 +268,7 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_hdl,
 		 (GFAPI_XREADDIRP_STAT | GFAPI_XREADDIRP_HANDLE);
 	struct glfs_object *tmp = NULL;
 	struct stat *sb;
+	glusterfs_fsal_xstat_t buffxstat = {.e_acl = NULL, .i_acl = NULL};
 #endif
 
 #ifdef GLTIMING
@@ -304,11 +375,43 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_hdl,
 			gluster_cleanup_vars(glhandle);
 			goto out;
 		}
+
+		if (attrs.request_mask & ATTR_ACL) {
+			/* Fetch the ACL */
+			status = glusterfs_get_acl(glfs_export,
+						   glhandle,
+						   &buffxstat, &attrs);
+			if (status.major == ERR_FSAL_NOENT) {
+				if (attrs.type == SYMBOLIC_LINK)
+					status = fsalstat(ERR_FSAL_NO_ERROR, 0);
+				else
+					status = gluster2fsal_error(ESTALE);
+			}
+
+			if (!FSAL_IS_ERROR(status)) {
+				/* Success, so mark ACL as valid. */
+				attrs.valid_mask |= ATTR_ACL;
+			} else {
+				if (attrs.request_mask & ATTR_RDATTR_ERR)
+					attrs.valid_mask = ATTR_RDATTR_ERR;
+
+				fsal_release_attrs(&attrs);
+				glusterfs_fsal_clean_xstat(&buffxstat);
+				goto out;
+			}
+		}
 #endif
+		rc = glusterfs_fsal_get_sec_label(objhandle, &attrs);
+		if (rc < 0) {
+			status = gluster2fsal_error(errno);
+			goto out;
+		}
+
 		cb_rc = cb(de.d_name, obj, &attrs,
 			   dir_state, glfs_telldir(glfd));
 
 		fsal_release_attrs(&attrs);
+		glusterfs_fsal_clean_xstat(&buffxstat);
 
 		/* Read ahead not supported by this FSAL. */
 		if (cb_rc >= DIR_READAHEAD)
@@ -793,6 +896,7 @@ static fsal_status_t getattrs(struct fsal_obj_handle *obj_hdl,
 	}
 
 	stat2fsal_attributes(&buffxstat.buffstat, attrs);
+
 	if (obj_hdl->type == DIRECTORY)
 		buffxstat.is_dir = true;
 	else
@@ -806,6 +910,20 @@ static fsal_status_t getattrs(struct fsal_obj_handle *obj_hdl,
 			/* Success, so mark ACL as valid. */
 			attrs->valid_mask |= ATTR_ACL;
 		}
+	}
+
+	rc = glusterfs_fsal_get_sec_label(objhandle, attrs);
+
+	if (rc < 0) {
+		if (errno == ENOENT)
+			status = gluster2fsal_error(ESTALE);
+		else
+			status = gluster2fsal_error(errno);
+		if (attrs->request_mask & ATTR_RDATTR_ERR) {
+			/* Caller asked for error to be visible. */
+			attrs->valid_mask = ATTR_RDATTR_ERR;
+		}
+		goto out;
 	}
 
 	/* *
@@ -1037,7 +1155,7 @@ fsal_status_t glusterfs_open_my_fd(struct glusterfs_handle *objhandle,
 	}
 
 	my_fd->glfd = glfd;
-	my_fd->openflags = openflags;
+	my_fd->openflags = FSAL_O_NFS_FLAGS(openflags);
 	my_fd->creds.caller_uid = op_ctx->creds->caller_uid;
 	my_fd->creds.caller_gid = op_ctx->creds->caller_gid;
 	my_fd->creds.caller_glen = op_ctx->creds->caller_glen;
@@ -1259,6 +1377,10 @@ fsal_status_t find_fd(struct glusterfs_fd *my_fd,
 				gsh_memdup(tmp2_fd->creds.caller_garray,
 					   tmp2_fd->creds.caller_glen *
 					   sizeof(gid_t));
+		/* Since we dup the fd, we need to close it post
+		 * processing the fop.
+		 */
+		*closefd = true;
 	} else {
 		my_fd->glfd = tmp2_fd->glfd;
 		my_fd->creds.caller_garray = tmp2_fd->creds.caller_garray;
@@ -2799,6 +2921,23 @@ static fsal_status_t glusterfs_setattr2(struct fsal_obj_handle *obj_hdl,
 	if (FSAL_IS_ERROR(status)) {
 		LogDebug(COMPONENT_FSAL,
 			 "setting ACL failed");
+		goto creds;
+	}
+
+	if (FSAL_TEST_MASK(attrib_set->valid_mask, ATTR4_SEC_LABEL) &&
+			op_ctx_export_has_option(EXPORT_OPTION_SECLABEL_SET)) {
+		retval = glfs_h_setxattrs(glfs_export->gl_fs->fs,
+				myself->glhandle,
+				glfs_export->sec_label_xattr,
+				attrib_set->sec_label.slai_data.slai_data_val,
+				attrib_set->sec_label.slai_data.slai_data_len,
+				0);
+		if (retval < 0) {
+			status = gluster2fsal_error(errno);
+			LogCrit(COMPONENT_FSAL,
+					"Error : seclabel failed with error %s",
+					strerror(errno));
+		}
 	}
 
 creds:

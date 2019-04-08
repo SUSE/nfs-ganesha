@@ -164,32 +164,31 @@ gpfsfsal_xstat_2_fsal_attributes(gpfsfsal_xstat_t *gpfs_buf,
 			     fsal_attr->mtime.tv_sec);
 	}
 
-	if (FSAL_TEST_MASK(fsal_attr->request_mask, ATTR_CHGTIME)) {
+	if (FSAL_TEST_MASK(fsal_attr->request_mask, ATTR_CHANGE)) {
 		if (p_buffstat->st_mtime == p_buffstat->st_ctime) {
 			if (p_buffstat->st_mtim.tv_nsec >
-			    p_buffstat->st_ctim.tv_nsec)
-				fsal_attr->chgtime = posix2fsal_time(
-						p_buffstat->st_mtime,
-						p_buffstat->st_mtim.tv_nsec);
-			else
-				fsal_attr->chgtime = posix2fsal_time(
-						p_buffstat->st_ctime,
-						p_buffstat->st_ctim.tv_nsec);
+			    p_buffstat->st_ctim.tv_nsec) {
+				fsal_attr->change =
+					(uint64_t) p_buffstat->st_mtim.tv_sec +
+					(uint64_t) p_buffstat->st_mtim.tv_nsec;
+			} else {
+				fsal_attr->change =
+					(uint64_t) p_buffstat->st_ctim.tv_sec +
+					(uint64_t) p_buffstat->st_ctim.tv_nsec;
+			}
 		} else if (p_buffstat->st_mtime > p_buffstat->st_ctime) {
-			fsal_attr->chgtime =
-			    posix2fsal_time(p_buffstat->st_mtime,
-					    p_buffstat->st_mtim.tv_nsec);
+			fsal_attr->change =
+				(uint64_t) p_buffstat->st_mtim.tv_sec +
+				(uint64_t) p_buffstat->st_mtim.tv_nsec;
 		} else {
-			fsal_attr->chgtime =
-			    posix2fsal_time(p_buffstat->st_ctime,
-					    p_buffstat->st_ctim.tv_nsec);
+			fsal_attr->change =
+				(uint64_t) p_buffstat->st_ctim.tv_sec +
+				(uint64_t) p_buffstat->st_ctim.tv_nsec;
 		}
-		fsal_attr->change =
-		    (uint64_t) fsal_attr->chgtime.tv_sec +
-		    (uint64_t) fsal_attr->chgtime.tv_nsec;
-		fsal_attr->valid_mask |= ATTR_CHGTIME;
-		LogFullDebug(COMPONENT_FSAL, "chgtime = %lu",
-			     fsal_attr->chgtime.tv_sec);
+
+		fsal_attr->valid_mask |= ATTR_CHANGE;
+		LogFullDebug(COMPONENT_FSAL, "change = %"PRIu64,
+			     fsal_attr->change);
 
 	}
 
@@ -298,6 +297,14 @@ fsal_acl_2_gpfs_acl(struct fsal_obj_handle *dir_hdl, fsal_acl_t *fsal_acl,
 	acl_buf->acl_type = GPFS_ACL_TYPE_NFS4;
 	acl_buf->acl_nace = fsal_acl->naces;
 	acl_buf->acl_len = acl_buflen;
+
+	/* GPFS can support max 638 entries */
+	if (fsal_acl->naces > GPFS_ACL_MAX_NACES) {
+		LogInfo(COMPONENT_FSAL,
+			"No. of ACE's:%d higher than supported by GPFS",
+			fsal_acl->naces);
+		return fsalstat(ERR_FSAL_INVAL, 0);
+	}
 
 	for (pace = fsal_acl->aces, i = 0;
 	     pace < fsal_acl->aces + fsal_acl->naces; pace++, i++) {

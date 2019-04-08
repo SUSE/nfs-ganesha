@@ -356,7 +356,6 @@ struct dir_chunk {
 
 #define DIR_ENTRY_FLAG_NONE     0x0000
 #define DIR_ENTRY_FLAG_DELETED  0x0001
-#define DIR_ENTRY_REFFED        0x0002
 #define DIR_ENTRY_SORTED        0x0004
 
 typedef struct mdcache_dir_entry__ {
@@ -382,8 +381,13 @@ typedef struct mdcache_dir_entry__ {
 	uint64_t namehash;
 	/** Key of cache entry */
 	mdcache_key_t ckey;
-	/** Flags */
+	/** Flags
+	 * Protected by write content_lock or atomics. */
 	uint32_t flags;
+	/** Temporary entry pointer
+	 * Only valid while the entry is ref'd.  Must be NULL otherwise.
+	 * Protected by the parent content_lock */
+	mdcache_entry_t *entry;
 	const char *name;
 	/** The NUL-terminated filename */
 	char name_buffer[];
@@ -675,7 +679,7 @@ mdcache_free_fh(struct gsh_buffdesc *fh_desc)
  * @brief Update entry metadata from its attributes
  *
  * This function, to be used after a FSAL_getattr, updates the
- * attribute trust flag and time, and stores the change time
+ * attribute trust flag and time, and stores the refresh time
  * in the main mdcache_entry_t.
  *
  * @note the caller MUST hold attr_lock for write

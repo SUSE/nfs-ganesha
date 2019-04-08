@@ -69,6 +69,9 @@ Requires: openSUSE-release
 @BCOND_RDMA@ rdma
 %global use_rdma %{on_off_switch rdma}
 
+@BCOND_9P@ 9P
+%global use_9P %{on_off_switch 9P}
+
 @BCOND_JEMALLOC@ jemalloc
 
 @BCOND_LTTNG@ lttng
@@ -124,7 +127,7 @@ BuildRequires:	krb5-devel
 %if ( 0%{?suse_version} >= 1330 )
 BuildRequires:  libnsl-devel
 %else
-%if ( 0%{?fedora} >= 28 )
+%if ( 0%{?fedora} >= 28 || 0%{?rhel} >= 8 )
 BuildRequires:  libnsl2-devel
 %endif
 %endif
@@ -190,7 +193,11 @@ Requires(postun): systemd
 BuildRequires:	initscripts
 %endif
 %if %{with man_page}
+%if ( 0%{?fedora} >= 28 || 0%{?rhel} >= 8 )
+BuildRequires: python3-sphinx
+%else
 BuildRequires: python-sphinx
+%endif
 %endif
 Requires(post): psmisc
 Requires(pre): shadow-utils
@@ -202,6 +209,7 @@ nfs-ganesha : NFS-GANESHA is a NFS Server running in user space.
 It comes with various back-end modules (called FSALs) provided as
  shared objects to support different file systems and name-spaces.
 
+%if %{with 9P}
 %package mount-9P
 Summary: a 9p mount helper
 Group: Applications/System
@@ -209,6 +217,7 @@ Group: Applications/System
 %description mount-9P
 This package contains the mount.9P script that clients can use
 to simplify mounting to NFS-GANESHA. This is a 9p mount helper.
+%endif
 
 %package vfs
 Summary: The NFS-GANESHA VFS FSAL
@@ -411,7 +420,8 @@ Summary: The NFS-GANESHA SELINUX targeted policy
 Group: Applications/System
 BuildArch:	noarch
 Requires:	nfs-ganesha = %{version}-%{release}
-%selinux_requires
+BuildRequires: selinux-policy-devel
+%{?selinux_requires}
 
 %description selinux
 This package contains an selinux policy for running ganesha.nfsd
@@ -494,7 +504,7 @@ cmake .	-DCMAKE_BUILD_TYPE=Debug			\
 	-DUSE_FSAL_VFS=ON				\
 	-DUSE_FSAL_PROXY=ON				\
 	-DUSE_DBUS=ON					\
-	-DUSE_9P=ON					\
+	-DUSE_9P=%{use_9P}				\
 	-DDISTNAME_HAS_GIT_DATA=OFF			\
 	-DUSE_MAN_PAGE=%{use_man_page}                  \
 	-DRPCBIND=%{use_rpcbind}			\
@@ -508,7 +518,7 @@ make %{?_smp_mflags} || make %{?_smp_mflags} || make
 
 %if ( 0%{?fedora} >= 30 || 0%{?rhel} >= 8 )
 make -C selinux -f /usr/share/selinux/devel/Makefile ganesha.pp
-pushd src/selinux && bzip2 -9 nfs-ganesha.pp && popd
+pushd selinux && bzip2 -9 ganesha.pp && popd
 %endif
 
 %install
@@ -525,7 +535,9 @@ mkdir -p %{buildroot}%{_libexecdir}/ganesha
 install -m 644 config_samples/logrotate_ganesha	%{buildroot}%{_sysconfdir}/logrotate.d/ganesha
 install -m 644 scripts/ganeshactl/org.ganesha.nfsd.conf	%{buildroot}%{_sysconfdir}/dbus-1/system.d
 install -m 755 scripts/nfs-ganesha-config.sh %{buildroot}%{_libexecdir}/ganesha
+%if %{with 9P}
 install -m 755 tools/mount.9P	%{buildroot}%{_sbindir}/mount.9P
+%endif
 
 install -m 644 config_samples/vfs.conf %{buildroot}%{_sysconfdir}/ganesha
 
@@ -560,10 +572,6 @@ install -m 644 config_samples/xfs.conf %{buildroot}%{_sysconfdir}/ganesha
 
 %if %{with ceph}
 install -m 644 config_samples/ceph.conf %{buildroot}%{_sysconfdir}/ganesha
-%endif
-
-%if %{with rados_recov}
-install -m 755 tools/ganesha-rados-grace	%{buildroot}%{_bindir}/ganesha-rados-grace
 %endif
 
 %if %{with rgw}
@@ -643,6 +651,7 @@ exit 0
 
 %files
 %{_bindir}/ganesha.nfsd
+%{_libdir}/libganesha_nfsd.so*
 %config %{_sysconfdir}/dbus-1/system.d/org.ganesha.nfsd.conf
 %config(noreplace) %{_sysconfdir}/sysconfig/ganesha
 %config(noreplace) %{_sysconfdir}/logrotate.d/ganesha
@@ -685,10 +694,12 @@ exit 0
 %endif
 
 
+%if %{with 9P}
 %files mount-9P
 %{_sbindir}/mount.9P
 %if %{with man_page}
 %{_mandir}/*/ganesha-9p-config.8.gz
+%endif
 %endif
 
 %files vfs
@@ -829,8 +840,10 @@ exit 0
 %{_bindir}/manage_exports
 %{_bindir}/manage_logger
 %{_bindir}/ganeshactl
+%if %{with 9P}
 %{_bindir}/client_stats_9pOps
 %{_bindir}/export_stats_9pOps
+%endif
 %endif
 %{_bindir}/fake_recall
 %{_bindir}/get_clientids

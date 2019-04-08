@@ -1,7 +1,7 @@
 /*
  * vim:noexpandtab:shiftwidth=8:tabstop=8:
  *
- * Copyright 2015-2017 Red Hat, Inc. and/or its affiliates.
+ * Copyright 2015-2019 Red Hat, Inc. and/or its affiliates.
  * Author: Daniel Gryniewicz <dang@redhat.com>
  *
  * This program is free software; you can redistribute it and/or
@@ -74,6 +74,14 @@ mdc_up_invalidate(const struct fsal_up_vector *vec, struct gsh_buffdesc *handle,
 	if (flags & FSAL_UP_INVALIDATE_CLOSE)
 		status = fsal_close(&entry->obj_handle);
 
+	if (flags & FSAL_UP_INVALIDATE_PARENT &&
+	    entry->obj_handle.type == DIRECTORY) {
+		PTHREAD_RWLOCK_wrlock(&entry->content_lock);
+		/* Clean up parent key */
+		mdcache_free_fh(&entry->fsobj.fsdir.parent);
+		PTHREAD_RWLOCK_unlock(&entry->content_lock);
+	}
+
 	mdcache_put(entry);
 
 out:
@@ -118,7 +126,7 @@ mdc_up_update(const struct fsal_up_vector *vec, struct gsh_buffdesc *handle,
 	if (flags &
 	    ~(fsal_up_update_filesize_inc | fsal_up_update_atime_inc |
 	      fsal_up_update_creation_inc | fsal_up_update_ctime_inc |
-	      fsal_up_update_mtime_inc | fsal_up_update_chgtime_inc |
+	      fsal_up_update_mtime_inc |
 	      fsal_up_update_spaceused_inc | fsal_up_nlink)) {
 		return fsalstat(ERR_FSAL_INVAL, 0);
 	}
@@ -277,15 +285,6 @@ mdc_up_update(const struct fsal_up_vector *vec, struct gsh_buffdesc *handle,
 		entry->attrs.mtime = attr->mtime;
 		mutatis_mutandis = true;
 		mask_set |= ATTR_MTIME;
-	}
-
-	if (FSAL_TEST_MASK(attr->valid_mask, ATTR_CHGTIME)
-	    && ((flags & ~fsal_up_update_chgtime_inc)
-		||
-		(gsh_time_cmp(&attr->chgtime, &entry->attrs.chgtime) == 1))) {
-		entry->attrs.chgtime = attr->chgtime;
-		mutatis_mutandis = true;
-		mask_set |= ATTR_CHGTIME;
 	}
 
 	if (FSAL_TEST_MASK(attr->valid_mask, ATTR_CHANGE)) {

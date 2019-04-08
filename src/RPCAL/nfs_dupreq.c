@@ -103,6 +103,34 @@ const char *dupreq_state_table[] = {
  * the current implementation. If we let nfs_dupreq_get_drc() reuse the
  * drc before it gets into recycle queue, we could end up with multiple
  * threads that decrement the ref count to zero.
+ *
+ * Life of a dupreq: A thread processing an NFS request calls the
+ * following functions in the order listed below:
+ *
+ * #1. nfs_dupreq_start(): This creates/gets a dupreq for the request if
+ * it needs DRC. Newly created dupreq is placed in a hash table as well
+ * as in a list. Its refcnt will be 2 at the beginning, one for being in
+ * the hash table and the other for the request call path. If a dupreq
+ * already exists in the hash table, it is provided with a hold!
+ *
+ * #2. nfs_dupreq_finish()/nfs_dupreq_delete(): Only one of these two
+ * functions will be called. If the request is completed successfully,
+ * nfs_dupreq_finish() is called which sets the state of the dupreq to
+ * complete. If the request processing fails, usually there is no reason
+ * to save the response, so nfs_dupreq_delete() is called to remove the
+ * dupreq from the hash table. Neither function releases the hold placed
+ * on the dupreq in nfs_dupreq_start() for the request call path.
+ * nfs_dupreq_delete() does release a hold on the dupreq for removing it
+ * from the hash table itself though.
+ *
+ * #3. Finally nfs_dupreq_rele(): At the end of the request processing,
+ * this function is called. This releases the hold placed on the dupreq
+ * in the nfs_dupreq_start() for the request call path.
+ *
+ * A dupreq exists at least until the nfs_dupreq_rele() call. A hashed
+ * dupreq will exist beyond this call as it is in the hash table. A
+ * dupreq eventually gets removed from the hash table when the drc gets
+ * freed or in nfs_dupreq_finish() that decides to take out few dupreqs!
  */
 struct drc_st {
 	pthread_mutex_t mtx;
@@ -460,12 +488,15 @@ static inline uint32_t nfs_dupreq_unref_drc(drc_t *drc)
 /**
  * @brief Check for expired TCP DRCs.
  */
+static inline void dupreq_entry_put(dupreq_entry_t *dv);
 static inline void drc_free_expired(void)
 {
 	drc_t *drc;
 	time_t now = time(NULL);
 	struct rbtree_x_part *t;
 	struct opr_rbtree_node *odrc = NULL;
+	struct dupreq_entry *dv;
+	struct dupreq_entry *tdv;
 
 	DRC_ST_LOCK();
 
@@ -500,6 +531,18 @@ static inline void drc_free_expired(void)
 				     d_u.tcp.recycle_q);
 			--(drc_st->tcp_drc_recycle_qlen);
 
+			/* Free any dupreqs in this drc. No need to
+			 * remove dupreqs from the hash table or
+			 * drc->dupreq_q list individually as the drc is
+			 * going to be freed anyway.  There shouldn't be
+			 * any active requests, so all these dupreqs
+			 * will have refcnt of 1 for being in the hash
+			 * table.
+			 */
+			TAILQ_FOREACH_SAFE(dv, &drc->dupreq_q, fifo_q, tdv) {
+				assert(dv->refcnt == 1);
+				dupreq_entry_put(dv);
+			}
 			free_tcp_drc(drc);
 		} else {
 			LogFullDebug(COMPONENT_DUPREQ,
@@ -870,8 +913,9 @@ static inline void dupreq_entry_put(dupreq_entry_t *dv)
 	/* If ref count is zero, no one should be accessing it other
 	 * than us.  so no lock is needed.
 	 */
-	if (refcnt == 0)
+	if (refcnt == 0) {
 		nfs_dupreq_free_dupreq(dv);
+	}
 }
 
 /**
@@ -1000,7 +1044,6 @@ dupreq_status_t nfs_dupreq_start(nfs_request_t *reqnfs,
 
 	drc = nfs_dupreq_get_drc(req);
 	dk = alloc_dupreq();
-	dk->hin.drc = drc;	/* trans. call path ref to dv */
 
 	switch (drc->type) {
 	case DRC_TCP_V4:
@@ -1149,10 +1192,9 @@ dupreq_status_t nfs_dupreq_finish(struct svc_req *req, nfs_res_t *res_nfs)
 	dv->res = res_nfs;
 	dv->timestamp = time(NULL);
 	dv->state = DUPREQ_COMPLETE;
-	drc = dv->hin.drc;
 	PTHREAD_MUTEX_unlock(&dv->mtx);
 
-	/* cond. remove from q head */
+	drc = req->rq_xprt->xp_u2; /* req holds a ref on drc */
 	PTHREAD_MUTEX_lock(&drc->mtx);
 
 	LogFullDebug(COMPONENT_DUPREQ,
@@ -1198,10 +1240,9 @@ dq_again:
 
 			/* remove q entry */
 			TAILQ_REMOVE(&drc->dupreq_q, ov, fifo_q);
+			TAILQ_INIT_ENTRY(ov, fifo_q);
 			--(drc->size);
-			/* release dv's ref */
-			nfs_dupreq_put_drc(drc, DRC_FLAG_LOCKED);
-			/* drc->mtx gets unlocked in the above call! */
+			PTHREAD_MUTEX_unlock(&drc->mtx);
 
 			rbtree_x_cached_remove(&drc->xt, t, &ov->rbt_k, ov->hk);
 
@@ -1211,7 +1252,7 @@ dq_again:
 				 "retiring ov=%p xid=%" PRIu32
 				 " on DRC=%p state=%s, status=%s, refcnt=%d",
 				 ov, ov->hin.tcp.rq_xid,
-				 ov->hin.drc, dupreq_state_table[dv->state],
+				 drc, dupreq_state_table[ov->state],
 				 dupreq_status_table[status], ov->refcnt);
 
 			/* release hashtable ref count */
@@ -1261,9 +1302,9 @@ dupreq_status_t nfs_dupreq_delete(struct svc_req *req)
 		goto out;
 
 	PTHREAD_MUTEX_lock(&dv->mtx);
-	drc = dv->hin.drc;
 	dv->state = DUPREQ_DELETED;
 	PTHREAD_MUTEX_unlock(&dv->mtx);
+	drc = req->rq_xprt->xp_u2;
 
 	LogFullDebug(COMPONENT_DUPREQ,
 		     "deleting dv=%p xid=%" PRIu32
@@ -1272,21 +1313,32 @@ dupreq_status_t nfs_dupreq_delete(struct svc_req *req)
 		     dupreq_state_table[dv->state], dupreq_status_table[status],
 		     dv->refcnt);
 
-	/* XXX dv holds a ref on drc */
+	/* This function is called to remove this dupreq from the
+	 * hashtable/list, but it is possible that another thread
+	 * processing a different request calling nfs_dupreq_finish()
+	 * might have already deleted this dupreq.
+	 *
+	 * If this dupreq is already removed from hash table/list, do
+	 * nothing.
+	 *
+	 * req holds a ref on drc, so it should be valid here.
+	 * assert(drc == (drc_t *)req->rq_xprt->xp_u2);
+	 */
+	PTHREAD_MUTEX_lock(&drc->mtx);
+	if (!TAILQ_IS_ENQUEUED(dv, fifo_q)) {
+		PTHREAD_MUTEX_unlock(&drc->mtx);
+		goto out; /* no more in the hash table/list, nothing todo */
+	}
+	TAILQ_REMOVE(&drc->dupreq_q, dv, fifo_q);
+	TAILQ_INIT_ENTRY(dv, fifo_q);
+	--(drc->size);
+	PTHREAD_MUTEX_unlock(&drc->mtx);
+
 	t = rbtx_partition_of_scalar(&drc->xt, dv->hk);
 
 	PTHREAD_MUTEX_lock(&t->mtx);
 	rbtree_x_cached_remove(&drc->xt, t, &dv->rbt_k, dv->hk);
 	PTHREAD_MUTEX_unlock(&t->mtx);
-
-	PTHREAD_MUTEX_lock(&drc->mtx);
-
-	TAILQ_REMOVE(&drc->dupreq_q, dv, fifo_q);
-	--(drc->size);
-
-	/* release dv's ref on drc and unlock */
-	nfs_dupreq_put_drc(drc, DRC_FLAG_LOCKED);
-	/* !LOCKED */
 
 	/* we removed the dupreq from hashtable, release a ref */
 	dupreq_entry_put(dv);
@@ -1307,6 +1359,7 @@ dupreq_status_t nfs_dupreq_delete(struct svc_req *req)
 void nfs_dupreq_rele(struct svc_req *req, const nfs_function_desc_t *func)
 {
 	dupreq_entry_t *dv = (dupreq_entry_t *) req->rq_u1;
+	drc_t *drc;
 
 	/* no-cache cleanup */
 	if (dv == (void *)DUPREQ_NOCACHE) {
@@ -1317,13 +1370,16 @@ void nfs_dupreq_rele(struct svc_req *req, const nfs_function_desc_t *func)
 		goto out;
 	}
 
+	drc = req->rq_xprt->xp_u2;
 	LogFullDebug(COMPONENT_DUPREQ,
 		     "releasing dv=%p xid=%" PRIu32
 		     " on DRC=%p state=%s, refcnt=%d",
-		     dv, dv->hin.tcp.rq_xid, dv->hin.drc,
+		     dv, dv->hin.tcp.rq_xid, drc,
 		     dupreq_state_table[dv->state], dv->refcnt);
 
+	/* release req's hold on dupreq and drc */
 	dupreq_entry_put(dv);
+	nfs_dupreq_put_drc(drc, DRC_FLAG_NONE);
 
  out:
 	/* dispose RPC header */
