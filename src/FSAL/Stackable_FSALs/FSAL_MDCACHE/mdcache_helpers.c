@@ -373,6 +373,7 @@ mdc_get_parent_handle(struct mdcache_fsal_export *export,
 	char buf[NFS4_FHSIZE];
 	struct gsh_buffdesc fh_desc = { buf, NFS4_FHSIZE };
 	fsal_status_t status;
+	int32_t expire_time_parent;
 
 #ifdef DEBUG_MDCACHE
 	assert(entry->content_lock.__data.__cur_writer);
@@ -389,28 +390,39 @@ mdc_get_parent_handle(struct mdcache_fsal_export *export,
 	/* And store in the parent host-handle */
 	mdcache_copy_fh(&entry->fsobj.fsdir.parent, &fh_desc);
 
+	expire_time_parent = op_ctx->fsal_export->exp_ops.fs_expiretimeparent(
+							op_ctx->fsal_export);
+	if (expire_time_parent != -1)
+		entry->fsobj.fsdir.parent_time = time(NULL) +
+						 expire_time_parent;
+	else
+		entry->fsobj.fsdir.parent_time = 0;
+
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
-/* entry's content_lock must be held in exclusive mode */
+/* entry's content_lock must not be held, this function will
+get the content_lock in exclusive mode */
 void
-mdc_get_parent(struct mdcache_fsal_export *export, mdcache_entry_t *entry)
+mdc_get_parent(struct mdcache_fsal_export *export, mdcache_entry_t *entry,
+	       struct gsh_buffdesc *parent_out)
 {
-	struct fsal_obj_handle *sub_handle;
+	struct fsal_obj_handle *sub_handle = NULL;
 	fsal_status_t status;
 
-#ifdef DEBUG_MDCACHE
-	assert(entry->content_lock.__data.__cur_writer);
-#endif
+	PTHREAD_RWLOCK_wrlock(&entry->content_lock);
 
 	if (entry->obj_handle.type != DIRECTORY) {
 		/* Parent pointer only for directories */
-		return;
+		goto out;
 	}
 
 	if (entry->fsobj.fsdir.parent.len != 0) {
 		/* Already has a parent pointer */
-		return;
+		if (entry->fsobj.fsdir.parent_time == 0 ||
+		    mdcache_is_parent_valid(entry)) {
+			goto copy_parent_out;
+		}
 	}
 
 	subcall_raw(export,
@@ -420,15 +432,27 @@ mdc_get_parent(struct mdcache_fsal_export *export, mdcache_entry_t *entry)
 
 	if (FSAL_IS_ERROR(status)) {
 		/* Top of filesystem */
-		return;
+		goto copy_parent_out;
 	}
 
+	mdcache_free_fh(&entry->fsobj.fsdir.parent);
 	mdc_get_parent_handle(export, entry, sub_handle);
 
-	/* Release parent handle */
-	subcall_raw(export,
-		    sub_handle->obj_ops->release(sub_handle)
-		   );
+copy_parent_out:
+	if (parent_out != NULL  && entry->fsobj.fsdir.parent.len != 0) {
+		/* Copy the parent handle to parent_out */
+		mdcache_copy_fh(parent_out, &entry->fsobj.fsdir.parent);
+	}
+
+out:
+	PTHREAD_RWLOCK_unlock(&entry->content_lock);
+
+	if (sub_handle != NULL) {
+		/* Release parent handle */
+		subcall_raw(export,
+			    sub_handle->obj_ops->release(sub_handle)
+			   );
+	}
 }
 
 /**
@@ -496,7 +520,7 @@ void mdcache_clean_dirent_chunks(mdcache_entry_t *entry)
 #endif
 	glist_for_each_safe(glist, glistn, &entry->fsobj.fsdir.chunks) {
 		mdcache_lru_unref_chunk(glist_entry(glist, struct dir_chunk,
-						    chunks), true);
+						    chunks));
 	}
 }
 
@@ -1147,8 +1171,6 @@ fsal_status_t mdc_lookup(mdcache_entry_t *mdc_parent, const char *name,
 	LogFullDebugAlt(COMPONENT_NFS_READDIR, COMPONENT_CACHE_INODE,
 			"Lookup %s", name);
 
-	PTHREAD_RWLOCK_rdlock(&mdc_parent->content_lock);
-
 	/* ".." doesn't end up in the cache */
 	if (!strcmp(name, "..")) {
 		struct mdcache_fsal_export *export = mdc_cur_export();
@@ -1157,20 +1179,7 @@ fsal_status_t mdc_lookup(mdcache_entry_t *mdc_parent, const char *name,
 		LogFullDebugAlt(COMPONENT_NFS_READDIR, COMPONENT_CACHE_INODE,
 				"Lookup parent (..) of %p", mdc_parent);
 
-		if (mdc_parent->fsobj.fsdir.parent.len == 0) {
-			/* we need write lock */
-			PTHREAD_RWLOCK_unlock(&mdc_parent->content_lock);
-			PTHREAD_RWLOCK_wrlock(&mdc_parent->content_lock);
-			mdc_get_parent(export, mdc_parent);
-		}
-
-		/* We need to drop the content lock around the locate, as that
-		 * will try to take the attribute lock on the parent to refresh
-		 * it's attributes, which can cause an ABBA with lookup/readdir.
-		 * Copy the parent filehandle, so we can drop the lock.
-		 */
-		mdcache_copy_fh(&tmpfh, &mdc_parent->fsobj.fsdir.parent);
-		PTHREAD_RWLOCK_unlock(&mdc_parent->content_lock);
+		mdc_get_parent(export, mdc_parent, &tmpfh);
 
 		status =  mdcache_locate_host(&tmpfh, export, new_entry,
 					      attrs_out);
@@ -1181,6 +1190,8 @@ fsal_status_t mdc_lookup(mdcache_entry_t *mdc_parent, const char *name,
 			status.major = ERR_FSAL_NOENT;
 		return status;
 	}
+
+	PTHREAD_RWLOCK_rdlock(&mdc_parent->content_lock);
 
 	if (mdcache_param.dir.avl_chunk == 0) {
 		/* We aren't caching dirents; call directly.
@@ -2287,11 +2298,10 @@ mdc_readdir_chunk_object(const char *name, struct fsal_obj_handle *sub_handle,
 				    "Nuking empty Chunk %p", chunk);
 			/* We read-ahead into an existing chunk, and this chunk
 			 * is empty.  Just ditch it now, to avoid any issue. */
-			mdcache_lru_unref_chunk(chunk, true);
+			mdcache_lru_unref_chunk(chunk);
 			if (state->first_chunk == chunk) {
 				/* Drop the first_chunk ref */
-				mdcache_lru_unref_chunk(state->first_chunk,
-						true);
+				mdcache_lru_unref_chunk(state->first_chunk);
 				state->first_chunk = new_dir_entry->chunk;
 				/* And take the first_chunk ref */
 				mdcache_lru_ref_chunk(state->first_chunk);
@@ -2398,7 +2408,7 @@ static struct dir_chunk *mdcache_skip_chunks(mdcache_entry_t *directory,
 	while (next_ck != 0 &&
 	       mdcache_avl_lookup_ck(directory, next_ck, &dirent)) {
 		chunk = dirent->chunk;
-		mdcache_lru_unref_chunk(chunk, true);
+		mdcache_lru_unref_chunk(chunk);
 		next_ck = chunk->next_ck;
 	}
 
@@ -2536,7 +2546,7 @@ again:
 			    "FSAL readdir status=%s",
 			    fsal_err_txt(readdir_status));
 		*dirent = NULL;
-		mdcache_lru_unref_chunk(chunk, true);
+		mdcache_lru_unref_chunk(chunk);
 		return readdir_status;
 	}
 
@@ -2545,7 +2555,7 @@ again:
 			    "status=%s",
 			    fsal_err_txt(status));
 		*dirent = NULL;
-		mdcache_lru_unref_chunk(chunk, true);
+		mdcache_lru_unref_chunk(chunk);
 		return status;
 	}
 
@@ -2563,14 +2573,14 @@ again:
 		LogFullDebugAlt(COMPONENT_NFS_READDIR, COMPONENT_CACHE_INODE,
 				"Empty chunk");
 
-		mdcache_lru_unref_chunk(chunk, true);
+		mdcache_lru_unref_chunk(chunk);
 
 		if (chunk == state.first_chunk) {
 			/* We really got nothing on this readdir, so don't
 			 * return a dirent.
 			 */
 			*dirent = NULL;
-			mdcache_lru_unref_chunk(chunk, true);
+			mdcache_lru_unref_chunk(chunk);
 			LogDebugAlt(COMPONENT_NFS_READDIR,
 				    COMPONENT_CACHE_INODE,
 				    "status=%s",
@@ -2952,7 +2962,7 @@ again:
 	 * drop.  To get here, we had at least 2 refs, and we also hold the
 	 * content_lock for at least read.  This means noone holds it for write,
 	 * and all final ref drops are done with it held for write. */
-	mdcache_lru_unref_chunk(chunk, true);
+	mdcache_lru_unref_chunk(chunk);
 
 	LogFullDebugAlt(COMPONENT_NFS_READDIR, COMPONENT_CACHE_INODE,
 			"About to read directory=%p cookie=%" PRIx64,
@@ -3046,7 +3056,7 @@ again:
 						chunk, look_ck, next_ck);
 				/* In order to get here, we passed the has_write
 				 * check above, and took the write lock. */
-				mdcache_lru_unref_chunk(chunk, true);
+				mdcache_lru_unref_chunk(chunk);
 				chunk = NULL;
 				goto again;
 			}

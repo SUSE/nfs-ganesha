@@ -49,11 +49,11 @@ int nlm4_Lock(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 	char buffer[MAXNETOBJ_SZ * 2] = "\0";
 	state_nsm_client_t *nsm_client;
 	state_nlm_client_t *nlm_client;
-	state_owner_t *nlm_owner, *holder;
+	state_owner_t *nlm_owner;
 	state_t *nlm_state;
-	fsal_lock_param_t lock, conflict;
+	fsal_lock_param_t lock;
 	int rc;
-	state_block_data_t *pblock_data;
+	state_block_data_t *pblock_data = NULL;
 	const char *proc_name = "nlm4_Lock";
 	care_t care = CARE_MONITOR;
 	/* Indicate if we let FSAL to handle requests during grace. */
@@ -85,7 +85,7 @@ int nlm4_Lock(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 		 (unsigned long long)arg->alock.l_len, buffer,
 		 arg->reclaim ? "yes" : "no");
 
-	copy_netobj(&res->res_nlm4test.cookie, &arg->cookie);
+	copy_netobj(&res->res_nlm4.cookie, &arg->cookie);
 
 	grace_ref = !op_ctx->fsal_export->exp_ops.fs_supports(
 					op_ctx->fsal_export, fso_grace_method);
@@ -111,7 +111,7 @@ int nlm4_Lock(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 				    &nsm_client,
 				    &nlm_client,
 				    &nlm_owner,
-				    &pblock_data,
+				    arg->block ? &pblock_data : NULL,
 				    arg->state,
 				    &nlm_state);
 
@@ -148,10 +148,10 @@ int nlm4_Lock(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 				  nlm_state,
 				  arg->block ? STATE_NLM_BLOCKING :
 					       STATE_NON_BLOCKING,
-				  pblock_data,
+				  arg->block ? &pblock_data : NULL,
 				  &lock,
-				  &holder,
-				  &conflict);
+				  NULL, /* We don't need conflict info */
+				  NULL);
 	PTHREAD_RWLOCK_unlock(&obj->state_hdl->state_lock);
 
 	/* We prevented delegations from being granted while trying to acquire
@@ -161,19 +161,8 @@ int nlm4_Lock(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 	(void) atomic_dec_uint32_t(&obj->state_hdl->file.anon_ops);
 
 	if (state_status != STATE_SUCCESS) {
-		res->res_nlm4test.test_stat.stat =
+		res->res_nlm4.stat.stat =
 				nlm_convert_state_error(state_status);
-
-		if (state_status == STATE_LOCK_CONFLICT) {
-			nlm_process_conflict(
-			    &res->res_nlm4test.test_stat.nlm4_testrply_u.holder,
-			    holder,
-			    &conflict);
-		}
-
-		/* If we didn't block, release the block data */
-		if (state_status != STATE_LOCK_BLOCKED && pblock_data != NULL)
-			gsh_free(pblock_data);
 
 		if (state_status == STATE_IN_GRACE)
 			res->res_nlm4.stat.stat = NLM4_DENIED_GRACE_PERIOD;
@@ -181,7 +170,14 @@ int nlm4_Lock(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
 		res->res_nlm4.stat.stat = NLM4_GRANTED;
 	}
 	rc = NFS_REQ_OK;
+
  out_dec:
+	/* If we didn't block, release the block data. Note that
+	 * state_lock() would set pblock_data to NULL if the lock was
+	 * blocked!
+	 */
+	gsh_free(pblock_data);
+
 	/* Release the NLM Client and NLM Owner references we have */
 	dec_nsm_client_ref(nsm_client);
 	dec_nlm_client_ref(nlm_client);
@@ -284,5 +280,5 @@ int nlm4_Lock_Message(nfs_arg_t *args, struct svc_req *req, nfs_res_t *res)
  */
 void nlm4_Lock_Free(nfs_res_t *res)
 {
-	netobj_free(&res->res_nlm4test.cookie);
+	netobj_free(&res->res_nlm4.cookie);
 }
